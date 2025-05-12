@@ -1,197 +1,186 @@
 const db = require('../db');
 
 // GET
-const obtenerVentasPorCliente = (req, res) => {
+const obtenerVentasPorCliente = async (req, res) => {
+  try {
     const idCliente = req.query.id_cliente || req.params.id_cliente;
-  
+
     if (!idCliente) {
       return res.status(400).json({ mensaje: 'Falta el parámetro id_cliente' });
     }
-  
-    const query = `
+
+    const [ventas] = await db.query(`
       SELECT V.COD_VENTA, V.ID_CLIENTE, V.TIPO_ENTREGA, V.FECHA_VENTA,
-             DV.COD_PRODUCTO, DV.CANTIDAD, DV.PRECIO_UNITARIO
+             DV.COD_PRODUCTO, DV.CANTIDAD, DV.PRECIO_UNITARIO, DV.TOTAL_PRODUCTO
       FROM VENTAS V
       JOIN DETALLE_VENTA DV ON V.COD_VENTA = DV.COD_VENTA
       WHERE V.ID_CLIENTE = ?
-    `;
-  
-    db.query(query, [idCliente], (err, resultados) => {
-      if (err) {
-        console.error('Error al obtener ventas:', err);
-        return res.status(500).json({ mensaje: 'Error del servidor' });
-      }
-  
-      res.status(200).json(resultados);
-    });
+    `, [idCliente]);
+
+    res.status(200).json(ventas);
+  } catch (err) {
+    console.error('Error al obtener ventas:', err);
+    res.status(500).json({ mensaje: 'Error del servidor' });
+  }
 };
-  
- 
 
-//POST
-
-const registrarVenta = (req, res) => {
+// POST
+const registrarVenta = async (req, res) => {
+  const connection = await db.getConnection();
+  try {
     const { id_cliente, tipo_entrega, productos } = req.body;
-  
+
     if (!id_cliente || !tipo_entrega || !productos || productos.length === 0) {
       return res.status(400).json({ mensaje: 'Datos incompletos' });
     }
-  
-    db.beginTransaction(err => {
-      if (err) return res.status(500).json({ mensaje: 'Error al iniciar transacción' });
-  
-      // Insertar en tabla VENTAS
-      const ventaQuery = 'INSERT INTO VENTAS (ID_CLIENTE, TIPO_ENTREGA) VALUES (?, ?)';
-      db.query(ventaQuery, [id_cliente, tipo_entrega], (err, resultVenta) => {
-        if (err) {
-          return db.rollback(() => {
-            res.status(500).json({ mensaje: 'Error al insertar venta' });
-          });
-        }
-  
-        const codVenta = resultVenta.insertId;
-  
-        // Preparar inserciones en DETALLE_VENTA
-        const detalleQuery = 'INSERT INTO DETALLE_VENTA (COD_VENTA, COD_PRODUCTO, CANTIDAD, PRECIO_UNITARIO) VALUES ?';
-        const detalleValues = productos.map(p => [
-          codVenta,
-          p.cod_producto,
-          p.cantidad,
-          p.precio_unitario
-        ]);
-  
-        db.query(detalleQuery, [detalleValues], (err) => {
-          if (err) {
-            return db.rollback(() => {
-              res.status(500).json({ mensaje: 'Error al insertar detalles' });
-            });
-          }
-  
-          db.commit(err => {
-            if (err) {
-              return db.rollback(() => {
-                res.status(500).json({ mensaje: 'Error al confirmar la venta' });
-              });
-            }
-  
-            res.status(201).json({ mensaje: 'Venta registrada correctamente', cod_venta: codVenta });
-          });
-        });
-      });
-    });
-};
 
-//PUT
+    await connection.beginTransaction();
 
-const editarVenta = (req, res) => {
-    const codVenta = req.params.cod_venta;
-    const { tipo_entrega, productos } = req.body;
-  
-    if (!tipo_entrega || !productos || productos.length === 0) {
-      return res.status(400).json({ mensaje: 'Datos incompletos para actualizar' });
+    const [ventaResult] = await connection.query(
+      'INSERT INTO VENTAS (ID_CLIENTE, TIPO_ENTREGA) VALUES (?, ?)',
+      [id_cliente, tipo_entrega]
+    );
+
+    const codVenta = ventaResult.insertId;
+
+    const detalleValues = [];
+    for (const p of productos) {
+      const [[{ PRECIO }]] = await connection.query(
+        'SELECT PRECIO FROM PRODUCTOS WHERE COD_PRODUCTO = ?',
+        [p.cod_producto]
+      );
+
+      const totalProducto = PRECIO * p.cantidad;
+      detalleValues.push([codVenta, p.cod_producto, p.cantidad, PRECIO, totalProducto]);
+
+      await connection.query(
+        'UPDATE PRODUCTOS SET STOCK = STOCK - ? WHERE COD_PRODUCTO = ?',
+        [p.cantidad, p.cod_producto]
+      );
     }
-  
-    db.beginTransaction(err => {
-      if (err) return res.status(500).json({ mensaje: 'Error al iniciar transacción' });
-  
-      // 1. Actualizar la venta
-      const updateVenta = 'UPDATE VENTAS SET TIPO_ENTREGA = ? WHERE COD_VENTA = ?';
-      db.query(updateVenta, [tipo_entrega, codVenta], (err) => {
-        if (err) {
-          return db.rollback(() => {
-            res.status(500).json({ mensaje: 'Error al actualizar la venta' });
-          });
-        }
-  
-        // 2. Eliminar productos anteriores
-        const deleteDetalles = 'DELETE FROM DETALLE_VENTA WHERE COD_VENTA = ?';
-        db.query(deleteDetalles, [codVenta], (err) => {
-          if (err) {
-            return db.rollback(() => {
-              res.status(500).json({ mensaje: 'Error al eliminar productos anteriores' });
-            });
-          }
-  
-          // 3. Insertar nuevos productos
-          const insertDetalles = `
-            INSERT INTO DETALLE_VENTA (COD_VENTA, COD_PRODUCTO, CANTIDAD, PRECIO_UNITARIO) VALUES ?
-          `;
-          const detalleValues = productos.map(p => [
-            codVenta,
-            p.cod_producto,
-            p.cantidad,
-            p.precio_unitario
-          ]);
-  
-          db.query(insertDetalles, [detalleValues], (err) => {
-            if (err) {
-              return db.rollback(() => {
-                res.status(500).json({ mensaje: 'Error al insertar nuevos productos' });
-              });
-            }
-  
-            db.commit(err => {
-              if (err) {
-                return db.rollback(() => {
-                  res.status(500).json({ mensaje: 'Error al confirmar los cambios' });
-                });
-              }
-  
-              res.status(200).json({ mensaje: 'Venta actualizada exitosamente' });
-            });
-          });
-        });
-      });
-    });
+
+    await connection.query(
+      'INSERT INTO DETALLE_VENTA (COD_VENTA, COD_PRODUCTO, CANTIDAD, PRECIO_UNITARIO, TOTAL_PRODUCTO) VALUES ?',
+      [detalleValues]
+    );
+
+    await connection.commit();
+    res.status(201).json({ mensaje: 'Venta registrada correctamente', cod_venta: codVenta });
+
+  } catch (err) {
+    await connection.rollback();
+    console.error('Error al registrar venta:', err);
+    res.status(500).json({ mensaje: 'Error al registrar la venta' });
+  } finally {
+    connection.release();
+  }
 };
-  
-const eliminarVenta = (req, res) => {
-    const codVenta = req.params.cod_venta;
-  
-    db.beginTransaction(err => {
-      if (err) return res.status(500).json({ mensaje: 'Error al iniciar transacción' });
-  
-      // 1. Eliminar los detalles de la venta
-      const deleteDetalles = 'DELETE FROM DETALLE_VENTA WHERE COD_VENTA = ?';
-      db.query(deleteDetalles, [codVenta], (err) => {
-        if (err) {
-          return db.rollback(() => {
-            res.status(500).json({ mensaje: 'Error al eliminar detalles de venta' });
-          });
-        }
-  
-        // 2. Eliminar la venta en sí
-        const deleteVenta = 'DELETE FROM VENTAS WHERE COD_VENTA = ?';
-        db.query(deleteVenta, [codVenta], (err, resultado) => {
-          if (err) {
-            return db.rollback(() => {
-              res.status(500).json({ mensaje: 'Error al eliminar venta' });
-            });
-          }
-  
-          if (resultado.affectedRows === 0) {
-            return db.rollback(() => {
-              res.status(404).json({ mensaje: 'Venta no encontrada' });
-            });
-          }
-  
-          db.commit(err => {
-            if (err) {
-              return db.rollback(() => {
-                res.status(500).json({ mensaje: 'Error al confirmar eliminación' });
-              });
-            }
-  
-            res.status(200).json({ mensaje: 'Venta eliminada exitosamente' });
-          });
-        });
-      });
-    });
+
+// PUT
+const editarVenta = async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const cod_venta = req.params.cod_venta;
+    const { productos } = req.body;
+
+    if (!cod_venta || !productos || productos.length === 0) {
+      return res.status(400).json({ mensaje: 'Datos incompletos' });
+    }
+
+    await connection.beginTransaction();
+
+    // 1. Obtener productos anteriores
+    const [productosOriginales] = await connection.query(
+      'SELECT COD_PRODUCTO, CANTIDAD FROM DETALLE_VENTA WHERE COD_VENTA = ?',
+      [cod_venta]
+    );
+
+    // 2. Restaurar stock de todos los productos anteriores
+    for (const p of productosOriginales) {
+      await connection.query(
+        'UPDATE PRODUCTOS SET STOCK = STOCK + ? WHERE COD_PRODUCTO = ?',
+        [p.CANTIDAD, p.COD_PRODUCTO]
+      );
+    }
+
+    // 3. Eliminar detalles antiguos
+    await connection.query('DELETE FROM DETALLE_VENTA WHERE COD_VENTA = ?', [cod_venta]);
+
+    // 4. Insertar nuevos productos y actualizar stock
+    const detalleValues = [];
+    for (const p of productos) {
+      const [[{ PRECIO }]] = await connection.query(
+        'SELECT PRECIO FROM PRODUCTOS WHERE COD_PRODUCTO = ?',
+        [p.cod_producto]
+      );
+      const totalProducto = PRECIO * p.cantidad;
+      detalleValues.push([cod_venta, p.cod_producto, p.cantidad, PRECIO, totalProducto]);
+
+      await connection.query(
+        'UPDATE PRODUCTOS SET STOCK = STOCK - ? WHERE COD_PRODUCTO = ?',
+        [p.cantidad, p.cod_producto]
+      );
+    }
+
+    await connection.query(
+      'INSERT INTO DETALLE_VENTA (COD_VENTA, COD_PRODUCTO, CANTIDAD, PRECIO_UNITARIO, TOTAL_PRODUCTO) VALUES ?',
+      [detalleValues]
+    );
+
+    await connection.commit();
+    res.status(200).json({ mensaje: 'Venta actualizada correctamente' });
+
+  } catch (err) {
+    await connection.rollback();
+    console.error('Error al editar venta:', err);
+    res.status(500).json({ mensaje: 'Error al editar la venta' });
+  } finally {
+    connection.release();
+  }
 };
-    
+
+// DELETE
+const eliminarVenta = async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const cod_venta = req.params.cod_venta;
+
+    if (!cod_venta) {
+      return res.status(400).json({ mensaje: 'ID de venta requerido' });
+    }
+
+    await connection.beginTransaction();
+
+    const [productosVenta] = await connection.query(
+      'SELECT COD_PRODUCTO, CANTIDAD FROM DETALLE_VENTA WHERE COD_VENTA = ?',
+      [cod_venta]
+    );
+
+    for (const p of productosVenta) {
+      await connection.query(
+        'UPDATE PRODUCTOS SET STOCK = STOCK + ? WHERE COD_PRODUCTO = ?',
+        [p.CANTIDAD, p.COD_PRODUCTO]
+      );
+    }
+
+    await connection.query('DELETE FROM DETALLE_VENTA WHERE COD_VENTA = ?', [cod_venta]);
+    await connection.query('DELETE FROM VENTAS WHERE COD_VENTA = ?', [cod_venta]);
+
+    await connection.commit();
+    res.status(200).json({ mensaje: 'Venta eliminada correctamente' });
+
+  } catch (err) {
+    await connection.rollback();
+    console.error('Error al eliminar venta:', err);
+    res.status(500).json({ mensaje: 'Error al eliminar la venta' });
+  } finally {
+    connection.release();
+  }
+};
+
 module.exports = {
-    obtenerVentasPorCliente,
-    registrarVenta,
-    editarVenta,
-    eliminarVenta
+  obtenerVentasPorCliente,
+  registrarVenta,
+  editarVenta,
+  eliminarVenta
 };

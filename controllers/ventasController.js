@@ -5,22 +5,29 @@ const obtenerVentasPorCliente = async (req, res) => {
   try {
     const idCliente = req.query.id_cliente || req.params.id_cliente;
 
-    if (!idCliente) {
-      return res.status(400).json({ mensaje: 'Falta el parámetro id_cliente' });
-    }
-
-    // Obtener todas las ventas y sus productos
-    const [ventas] = await db.query(`
+    // Base query
+    let query = `
       SELECT V.COD_VENTA, V.ID_CLIENTE, V.TIPO_ENTREGA, V.FECHA_VENTA,
             DV.COD_PRODUCTO, DV.CANTIDAD, DV.PRECIO_UNITARIO, DV.TOTAL_PRODUCTO,
             P.NOMBRE_PRODUCTO
       FROM VENTAS V
       JOIN DETALLE_VENTA DV ON V.COD_VENTA = DV.COD_VENTA
       JOIN PRODUCTOS P ON DV.COD_PRODUCTO = P.COD_PRODUCTO
-      WHERE V.ID_CLIENTE = ?
-    `, [idCliente]);
+    `;
+    const params = [];
 
-    // Agrupar por COD_VENTA y calcular total
+    if (idCliente) {
+      query += ` WHERE V.ID_CLIENTE = ?`;
+      params.push(idCliente);
+    }
+
+    const [ventas] = await db.query(query, params);
+
+    if (ventas.length === 0) {
+      return res.status(200).json([]); // Devuelve arreglo vacío si no hay ventas
+    }
+
+    // Agrupar ventas
     const ventasAgrupadas = {};
 
     ventas.forEach(v => {
@@ -46,14 +53,14 @@ const obtenerVentasPorCliente = async (req, res) => {
       ventasAgrupadas[v.COD_VENTA].total_venta += parseFloat(v.TOTAL_PRODUCTO);
     });
 
-    // Enviar como array
     res.status(200).json(Object.values(ventasAgrupadas));
-
+    
   } catch (err) {
     console.error('Error al obtener ventas:', err);
     res.status(500).json({ mensaje: 'Error del servidor' });
   }
 };
+
 
 
 // POST

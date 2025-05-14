@@ -12,9 +12,11 @@ const obtenerVentasPorCliente = async (req, res) => {
     // Obtener todas las ventas y sus productos
     const [ventas] = await db.query(`
       SELECT V.COD_VENTA, V.ID_CLIENTE, V.TIPO_ENTREGA, V.FECHA_VENTA,
-             DV.COD_PRODUCTO, DV.CANTIDAD, DV.PRECIO_UNITARIO, DV.TOTAL_PRODUCTO
+            DV.COD_PRODUCTO, DV.CANTIDAD, DV.PRECIO_UNITARIO, DV.TOTAL_PRODUCTO,
+            P.NOMBRE_PRODUCTO
       FROM VENTAS V
       JOIN DETALLE_VENTA DV ON V.COD_VENTA = DV.COD_VENTA
+      JOIN PRODUCTOS P ON DV.COD_PRODUCTO = P.COD_PRODUCTO
       WHERE V.ID_CLIENTE = ?
     `, [idCliente]);
 
@@ -28,13 +30,14 @@ const obtenerVentasPorCliente = async (req, res) => {
           id_cliente: v.ID_CLIENTE,
           tipo_entrega: v.TIPO_ENTREGA,
           fecha_venta: v.FECHA_VENTA,
+          productos: [],
           total_venta: 0,
-          productos: []
         };
       }
 
       ventasAgrupadas[v.COD_VENTA].productos.push({
         cod_producto: v.COD_PRODUCTO,
+        nombre_producto: v.NOMBRE_PRODUCTO,
         cantidad: v.CANTIDAD,
         precio_unitario: v.PRECIO_UNITARIO,
         total_producto: v.TOTAL_PRODUCTO
